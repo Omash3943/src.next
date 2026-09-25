@@ -1,11 +1,8 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
-
 package org.chromium.chrome.browser;
 
 import static org.chromium.chrome.browser.ui.IncognitoRestoreAppLaunchDrawBlocker.IS_INCOGNITO_SELECTED;
 
+import android.animation.ValueAnimator;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
@@ -16,10 +13,13 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
+import android.util.DisplayMetrics;
 import android.util.Pair;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.KeyboardShortcutGroup;
 import android.view.Menu;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.ViewConfiguration;
@@ -38,6 +38,7 @@ import androidx.lifecycle.LifecycleRegistry;
 
 import org.chromium.base.CallbackController;
 import org.chromium.base.CommandLine;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.MemoryPressureListener;
@@ -227,10 +228,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 
-import org.chromium.chrome.browser.homepage.HomepageManager;
-
-import android.animation.ValueAnimator;
-
 /**
  * This is the main activity for ChromeMobile when not running in document mode.  All the tabs
  * are accessible via a chrome specific tab switching UI.
@@ -397,6 +394,12 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
     // ID assigned to each ChromeTabbedActivity instance in Android S+ where multi-instance feature
     // is supported. This can be explicitly set in the incoming Intent or internally assigned.
     private int mWindowId;
+
+    // Touch and window drag tracking variables for floating mode
+    private int mInitialTouchX;
+    private int mInitialTouchY;
+    private int mInitialWindowX;
+    private int mInitialWindowY;
 
     private final IncognitoTabHost mIncognitoTabHost = new IncognitoTabHost() {
         @Override
@@ -1059,6 +1062,21 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
                     getWindowAndroid(), mNotificationPermissionController);
             mNotificationPermissionController.requestPermissionIfNeeded(false /* contextual */);
             if (BackPressManager.isEnabled()) initializeBackPressHandlers();
+
+            // Ensure floating window attributes and drag handle are active after native setup.
+            setupFloatingWindow();
+            View dragHandle = findViewById(R.id.floating_drag_handle);
+            if (dragHandle != null) {
+                setupFloatingDragHandle(dragHandle);
+            }
+            View closeBtn = findViewById(R.id.floating_close_btn);
+            if (closeBtn != null) {
+                closeBtn.setOnClickListener(v -> finish());
+            }
+            View minBtn = findViewById(R.id.floating_min_btn);
+            if (minBtn != null) {
+                minBtn.setOnClickListener(v -> moveTaskToBack(true));
+            }
         }
     }
 
@@ -1098,6 +1116,8 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
         }
 
         FeatureNotificationUtils.handleIntentIfApplicable(getIntent());
+
+        setupFloatingWindow();
     }
 
     @Override
@@ -1126,6 +1146,8 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
     public void onStartWithNative() {
         mMainIntentMetrics.logLaunchBehavior();
         super.onStartWithNative();
+
+        setupFloatingWindow();
 
         // Don't call setInitialOverviewState if 1) we're waiting for the tab's creation or we risk
         // showing a glimpse of the tab selector during start up. 2) on warm startup from an
@@ -1189,6 +1211,70 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
     @Override
     public ChromeTabCreator getCurrentTabCreator() {
         return (ChromeTabCreator) super.getCurrentTabCreator();
+    }
+
+    /**
+     * Configures the activity window to float freely over other apps with pass-through outside touch.
+     */
+    public void setupFloatingWindow() {
+        Window window = getWindow();
+        if (window == null) return;
+        WindowManager.LayoutParams lp = window.getAttributes();
+        lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int screenWidth = dm.widthPixels;
+        int screenHeight = dm.heightPixels;
+
+        // Apply responsive floating viewport (~85% width, ~72% height)
+        if (lp.width <= ViewGroup.LayoutParams.MATCH_PARENT || lp.width == screenWidth) {
+            lp.width = (int) (screenWidth * 0.88f);
+        }
+        if (lp.height <= ViewGroup.LayoutParams.MATCH_PARENT || lp.height == screenHeight) {
+            lp.height = (int) (screenHeight * 0.72f);
+        }
+
+        if (lp.gravity == Gravity.NO_GRAVITY || lp.gravity == (Gravity.FILL)) {
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.x = (int) (screenWidth * 0.06f);
+            lp.y = (int) (screenHeight * 0.08f);
+        }
+
+        window.setAttributes(lp);
+    }
+
+    /**
+     * Attaches touch drag listener to floating dock handle to update window positioning dynamically.
+     * @param dragHandleView View that triggers window movement on drag.
+     */
+    public void setupFloatingDragHandle(View dragHandleView) {
+        if (dragHandleView == null) return;
+        dragHandleView.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                Window window = getWindow();
+                if (window == null) return false;
+                WindowManager.LayoutParams lp = window.getAttributes();
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        mInitialTouchX = (int) event.getRawX();
+                        mInitialTouchY = (int) event.getRawY();
+                        mInitialWindowX = lp.x;
+                        mInitialWindowY = lp.y;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int deltaX = (int) event.getRawX() - mInitialTouchX;
+                        int deltaY = (int) event.getRawY() - mInitialTouchY;
+                        lp.x = mInitialWindowX + deltaX;
+                        lp.y = mInitialWindowY + deltaY;
+                        getWindowManager().updateViewLayout(window.getDecorView(), lp);
+                        return true;
+                    default:
+                        break;
+                }
+                return false;
+            }
+        });
     }
 
     /**
@@ -1805,8 +1891,23 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
                 | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
+        setupFloatingWindow();
+
         mContentContainer = (ViewGroup) findViewById(android.R.id.content);
         mControlContainer = (ToolbarControlContainer) findViewById(R.id.control_container);
+
+        View dragHandle = findViewById(R.id.floating_drag_handle);
+        if (dragHandle != null) {
+            setupFloatingDragHandle(dragHandle);
+        }
+        View closeBtn = findViewById(R.id.floating_close_btn);
+        if (closeBtn != null) {
+            closeBtn.setOnClickListener(v -> finish());
+        }
+        View minBtn = findViewById(R.id.floating_min_btn);
+        if (minBtn != null) {
+            minBtn.setOnClickListener(v -> moveTaskToBack(true));
+        }
 
         boolean isLegacyTabSwitcher = false;
 
@@ -3004,3 +3105,4 @@ public class ChromeTabbedActivity extends ChromeActivity<ChromeActivityComponent
         });
     }
 }
+
