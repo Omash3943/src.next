@@ -69,22 +69,54 @@ jobs:
             libxml2-dev \
             libxslt-dev \
             unzip \
-            curl
+            curl \
+            git
 
       - name: Install Official Standalone GN Binary & depot_tools
         run: |
-          # Download Google's official standalone native GN binary to avoid depot_tools wrapper issues
+          # Download Google's standalone native GN binary
           curl -sL https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest -o gn.zip
           sudo unzip -o gn.zip -d /usr/local/bin/
           sudo chmod +x /usr/local/bin/gn
           /usr/local/bin/gn --version
 
-          # Clone depot_tools for ninja and auxiliary chromium scripts
+          # Clone depot_tools for auxiliary tools and scripts
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
-          
-          # Prioritize /usr/local/bin in PATH
+
           echo "/usr/local/bin" >> $GITHUB_PATH
           echo "$HOME/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch Missing Chromium Build Harness & Setup .gn Root
+        run: |
+          # 1. Read Chromium Version
+          CHROME_VER=$(cat CHROMIUM_VERSION | tr -d '\r\n ')
+          echo "Target Chromium Version: ${CHROME_VER}"
+
+          # 2. Create the missing root .gn file pointing to the Chromium build configuration
+          cat << 'EOF' > .gn
+          buildconfig = "//build/config/BUILDCONFIG.gn"
+          script_executable = "python3"
+          default_args = {
+            target_os = "android"
+            target_cpu = "arm64"
+          }
+          EOF
+
+          # 3. Sparse-checkout the missing build/ and buildtools/ trees from upstream Chromium
+          if [ ! -d "build" ]; then
+            echo "Checking out upstream Chromium build/ harness..."
+            git clone --depth 1 --filter=blob:none --sparse --branch "${CHROME_VER}" https://chromium.googlesource.com/chromium/src.git _upstream_chrome || \
+            git clone --depth 1 --filter=blob:none --sparse https://chromium.googlesource.com/chromium/src.git _upstream_chrome
+
+            cd _upstream_chrome
+            git sparse-checkout set build buildtools
+            cp -r build ../
+            if [ -d "buildtools" ]; then
+              cp -r buildtools ../
+            fi
+            cd ..
+            rm -rf _upstream_chrome
+          fi
 
       - name: Configure Build Output Directory
         run: |
@@ -92,6 +124,7 @@ jobs:
           export DEPOT_TOOLS_UPDATE=0
           mkdir -p out/AndroidRelease
 
+          # Use Kiwi's production args if present, otherwise set baseline release args
           if [ -f ".build/production_build_reference/args.gn" ]; then
             cp .build/production_build_reference/args.gn out/AndroidRelease/args.gn
           else
@@ -109,14 +142,14 @@ jobs:
           EOF
           fi
 
-          # Generate Ninja build rules using the native standalone GN binary
+          # Generate Ninja files
           /usr/local/bin/gn gen out/AndroidRelease
 
       - name: Compile chrome_public_apk via Ninja
         run: |
           export PATH="/usr/local/bin:$HOME/depot_tools:$PATH"
           export DEPOT_TOOLS_UPDATE=0
-          # Limit parallel jobs to available cores to prevent runner out-of-memory crashes
+          # Compile the APK target using available runner CPU cores
           ninja -C out/AndroidRelease chrome_public_apk -j $(nproc)
 
       - name: Locate and Package Output APK
