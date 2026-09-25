@@ -86,13 +86,13 @@ jobs:
           echo "/usr/local/bin" >> $GITHUB_PATH
           echo "$HOME/depot_tools" >> $GITHUB_PATH
 
-      - name: Fetch Missing Chromium Build Harness & Setup .gn Root
+      - name: Fetch Missing Chromium Build Harness, Tools, and Root BUILD.gn
         run: |
           # 1. Read Chromium Version
           CHROME_VER=$(cat CHROMIUM_VERSION | tr -d '\r\n ')
           echo "Target Chromium Version: ${CHROME_VER}"
 
-          # 2. Create the missing root .gn file pointing to the Chromium build configuration
+          # 2. Create the root .gn file pointing to the Chromium build configuration
           cat << 'EOF' > .gn
           buildconfig = "//build/config/BUILDCONFIG.gn"
           script_executable = "python3"
@@ -102,21 +102,25 @@ jobs:
           }
           EOF
 
-          # 3. Sparse-checkout the missing build/ and buildtools/ trees from upstream Chromium
-          if [ ! -d "build" ]; then
-            echo "Checking out upstream Chromium build/ harness..."
-            git clone --depth 1 --filter=blob:none --sparse --branch "${CHROME_VER}" https://chromium.googlesource.com/chromium/src.git _upstream_chrome || \
-            git clone --depth 1 --filter=blob:none --sparse https://chromium.googlesource.com/chromium/src.git _upstream_chrome
+          # 3. Sparse-checkout build/, buildtools/, tools/, and the root BUILD.gn from upstream
+          echo "Checking out upstream Chromium build system..."
+          git clone --depth 1 --filter=blob:none --sparse --branch "${CHROME_VER}" https://chromium.googlesource.com/chromium/src.git _upstream_chrome || \
+          git clone --depth 1 --filter=blob:none --sparse https://chromium.googlesource.com/chromium/src.git _upstream_chrome
 
-            cd _upstream_chrome
-            git sparse-checkout set build buildtools
-            cp -r build ../
-            if [ -d "buildtools" ]; then
-              cp -r buildtools ../
-            fi
-            cd ..
-            rm -rf _upstream_chrome
+          cd _upstream_chrome
+          git sparse-checkout set build buildtools tools BUILD.gn
+          cp -r build ../
+          if [ -d "buildtools" ]; then
+            cp -r buildtools ../
           fi
+          if [ -d "tools" ]; then
+            cp -r tools ../
+          fi
+          if [ -f "BUILD.gn" ]; then
+            cp BUILD.gn ../
+          fi
+          cd ..
+          rm -rf _upstream_chrome
 
       - name: Configure Build Output Directory
         run: |
