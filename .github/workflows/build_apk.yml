@@ -59,6 +59,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            python-is-python3 \
             ninja-build \
             bison \
             gperf \
@@ -71,11 +72,14 @@ jobs:
       - name: Install Google depot_tools
         run: |
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
+          # Bootstrap depot_tools to generate python3_bin_reldir.txt and initialize cipd
+          bash $HOME/depot_tools/ensure_bootstrap
           echo "$HOME/depot_tools" >> $GITHUB_PATH
 
       - name: Configure Build Output Directory
         run: |
           export PATH="$HOME/depot_tools:$PATH"
+          export DEPOT_TOOLS_UPDATE=0
           mkdir -p out/AndroidRelease
 
           if [ -f ".build/production_build_reference/args.gn" ]; then
@@ -95,29 +99,32 @@ jobs:
           EOF
           fi
 
-          if command -v gn &> /dev/null; then
-            gn gen out/AndroidRelease
-          elif [ -f "buildtools/linux64/gn" ]; then
+          # Prioritize the repository's native GN binary if available, otherwise use depot_tools gn
+          if [ -f "buildtools/linux64/gn" ]; then
+            chmod +x buildtools/linux64/gn
             ./buildtools/linux64/gn gen out/AndroidRelease
+          elif command -v gn &> /dev/null; then
+            gn gen out/AndroidRelease
           fi
 
       - name: Compile chrome_public_apk via Ninja
         run: |
           export PATH="$HOME/depot_tools:$PATH"
-          # Limit parallel links/jobs to prevent out-of-memory errors on GitHub runners
+          export DEPOT_TOOLS_UPDATE=0
+          # Limit parallel jobs to available cores to prevent runner out-of-memory crashes
           ninja -C out/AndroidRelease chrome_public_apk -j $(nproc)
 
       - name: Locate and Package Output APK
         id: locate-apk
         run: |
           mkdir -p output_artifacts
-          APK_PATH=$(find out/AndroidRelease -type f -name "*chrome_public*.apk" -o -name "*ChromePublic*.apk" -o -name "*out.apk" | head -n 1)
+          APK_PATH=$(find out/AndroidRelease -type f \( -name "*chrome_public*.apk" -o -name "*ChromePublic*.apk" -o -name "*out.apk" \) | head -n 1)
           if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
             echo "Found compiled APK: $APK_PATH"
             cp "$APK_PATH" output_artifacts/KiwiFloatingBrowser-arm64.apk
             echo "apk_path=output_artifacts/KiwiFloatingBrowser-arm64.apk" >> $GITHUB_OUTPUT
           else
-            echo "WARNING: Pre-compiled binary location check fallback"
+            echo "WARNING: Listing all generated APKs if any:"
             find out/AndroidRelease -name "*.apk"
           fi
 
