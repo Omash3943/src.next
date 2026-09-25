@@ -20,16 +20,27 @@ import org.chromium.base.supplier.ObservableSupplier;
 import org.chromium.base.supplier.OneShotCallback;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.supplier.Supplier;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.device.DeviceClassManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.omnibox.LocationBar;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabCreationState;
+import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
+import org.chromium.chrome.browser.tabmodel.TabCreator;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.ButtonData;
@@ -72,6 +83,15 @@ public class TopToolbarCoordinator implements Toolbar {
     public static final int TAB_SWITCHER_MODE_NORMAL_ANIMATION_DURATION_MS = 250;
     public static final int TAB_SWITCHER_MODE_GTS_ANIMATION_DURATION_MS = 250;
 
+    private static final int[] FLOATING_TAB_BUTTON_IDS = new int[] {
+            R.id.floating_tab_1,
+            R.id.floating_tab_2,
+            R.id.floating_tab_3,
+            R.id.floating_tab_4,
+            R.id.floating_tab_5,
+            R.id.floating_tab_6
+    };
+
     private final ToolbarLayout mToolbarLayout;
 
     private final boolean mIsGridTabSwitcherEnabled;
@@ -96,6 +116,8 @@ public class TopToolbarCoordinator implements Toolbar {
     private ToolbarControlContainer mControlContainer;
     private Supplier<ResourceManager> mResourceManagerSupplier;
     private TopToolbarOverlayCoordinator mOverlayCoordinator;
+
+    private TabModelSelectorTabModelObserver mFloatingTabModelObserver;
 
     /**
      * Creates a new {@link TopToolbarCoordinator}.
@@ -261,6 +283,8 @@ public class TopToolbarCoordinator implements Toolbar {
 
         mToolbarLayout.onNativeLibraryReady();
 
+        initFloatingTabsBar();
+
         // If fullscreen is disabled, don't bother creating this overlay; only the android view will
         // ever be shown.
         if (DeviceClassManager.enableFullscreen()) {
@@ -270,6 +294,126 @@ public class TopToolbarCoordinator implements Toolbar {
                     mIsGridTabSwitcherEnabled);
             layoutManager.addSceneOverlay(mOverlayCoordinator);
             mToolbarLayout.setOverlayCoordinator(mOverlayCoordinator);
+        }
+    }
+
+    /**
+     * Initializes the floating multi-tab dock and hooks click/drag listeners to Kiwi's TabModel.
+     */
+    private void initFloatingTabsBar() {
+        if (mControlContainer == null) return;
+        TabModelSelector selector =
+                mTabModelSelectorSupplier != null ? mTabModelSelectorSupplier.get() : null;
+        if (selector == null) return;
+
+        // Wire drag handle to ChromeTabbedActivity window drag updater
+        View dragHandle = mControlContainer.findViewById(R.id.floating_drag_handle);
+        if (dragHandle != null && mControlContainer.getContext() instanceof ChromeTabbedActivity) {
+            ((ChromeTabbedActivity) mControlContainer.getContext()).setupFloatingDragHandle(dragHandle);
+        }
+
+        // Wire floating close button
+        View closeBtn = mControlContainer.findViewById(R.id.floating_close_btn);
+        if (closeBtn != null && mControlContainer.getContext() instanceof ChromeTabbedActivity) {
+            closeBtn.setOnClickListener(
+                    v -> ((ChromeTabbedActivity) mControlContainer.getContext()).finish());
+        }
+
+        // Wire floating minimize button
+        View minBtn = mControlContainer.findViewById(R.id.floating_min_btn);
+        if (minBtn != null && mControlContainer.getContext() instanceof ChromeTabbedActivity) {
+            minBtn.setOnClickListener(
+                    v -> ((ChromeTabbedActivity) mControlContainer.getContext()).moveTaskToBack(true));
+        }
+
+        // Bind 6 tab buttons
+        for (int i = 0; i < FLOATING_TAB_BUTTON_IDS.length; i++) {
+            final int tabIndex = i;
+            View tabBtn = mControlContainer.findViewById(FLOATING_TAB_BUTTON_IDS[i]);
+            if (tabBtn != null) {
+                tabBtn.setOnClickListener(v -> onFloatingTabPillClicked(tabIndex));
+            }
+        }
+
+        updateFloatingTabPillsHighlight();
+
+        if (mFloatingTabModelObserver == null) {
+            mFloatingTabModelObserver = new TabModelSelectorTabModelObserver(selector) {
+                @Override
+                public void didSelectTab(
+                        Tab tab, @TabSelectionType int type, int lastId) {
+                    updateFloatingTabPillsHighlight();
+                }
+
+                @Override
+                public void didCloseTab(Tab tab) {
+                    updateFloatingTabPillsHighlight();
+                }
+
+                @Override
+                public void didAddTab(Tab tab, @TabLaunchType int type,
+                        @TabCreationState int creationState) {
+                    updateFloatingTabPillsHighlight();
+                }
+            };
+        }
+
+        selector.addObserver(new TabModelSelectorObserver() {
+            @Override
+            public void onTabModelSelected(TabModel newModel, TabModel oldModel) {
+                updateFloatingTabPillsHighlight();
+            }
+        });
+    }
+
+    /**
+     * Handles switching or creating tabs when floating dock pill is clicked.
+     */
+    private void onFloatingTabPillClicked(int targetIndex) {
+        TabModelSelector selector =
+                mTabModelSelectorSupplier != null ? mTabModelSelectorSupplier.get() : null;
+        if (selector == null) return;
+
+        TabModel model = selector.getCurrentModel();
+        if (model == null) return;
+
+        if (targetIndex < model.getCount()) {
+            TabModelUtils.setIndex(model, targetIndex, false);
+        } else {
+            TabCreator creator = selector.getCurrentTabCreator();
+            if (creator != null) {
+                creator.launchUrl(
+                        HomepageManager.getInstance().getHomepageUriIgnoringEnabledState(),
+                        TabLaunchType.FROM_CHROME_UI);
+            }
+        }
+        updateFloatingTabPillsHighlight();
+    }
+
+    /**
+     * Visually highlights active tab pill and dims non-existent tabs.
+     */
+    public void updateFloatingTabPillsHighlight() {
+        if (mControlContainer == null) return;
+        TabModelSelector selector =
+                mTabModelSelectorSupplier != null ? mTabModelSelectorSupplier.get() : null;
+        if (selector == null) return;
+
+        TabModel model = selector.getCurrentModel();
+        if (model == null) return;
+
+        int activeIndex = model.index();
+        int totalTabs = model.getCount();
+
+        for (int i = 0; i < FLOATING_TAB_BUTTON_IDS.length; i++) {
+            View tabBtn = mControlContainer.findViewById(FLOATING_TAB_BUTTON_IDS[i]);
+            if (tabBtn != null) {
+                boolean isActive = (i == activeIndex);
+                boolean exists = (i < totalTabs);
+                tabBtn.setSelected(isActive);
+                tabBtn.setActivated(isActive);
+                tabBtn.setAlpha(isActive ? 1.0f : (exists ? 0.75f : 0.35f));
+            }
         }
     }
 
@@ -298,6 +442,10 @@ public class TopToolbarCoordinator implements Toolbar {
      * Cleans up any code as necessary.
      */
     public void destroy() {
+        if (mFloatingTabModelObserver != null) {
+            mFloatingTabModelObserver.destroy();
+            mFloatingTabModelObserver = null;
+        }
         if (mOverlayCoordinator != null) {
             mOverlayCoordinator.destroy();
             mOverlayCoordinator = null;
@@ -444,6 +592,7 @@ public class TopToolbarCoordinator implements Toolbar {
      */
     public void onStateRestored() {
         mToolbarLayout.onStateRestored();
+        updateFloatingTabPillsHighlight();
     }
 
     /**
@@ -455,6 +604,7 @@ public class TopToolbarCoordinator implements Toolbar {
      */
     public void onTabOrModelChanged() {
         mToolbarLayout.onTabOrModelChanged();
+        updateFloatingTabPillsHighlight();
     }
 
     /**
