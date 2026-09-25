@@ -88,9 +88,13 @@ jobs:
 
       - name: Fetch Missing Chromium Build Harness, Tools, and Root BUILD.gn
         run: |
-          # 1. Read Chromium Version
-          CHROME_VER=$(cat CHROMIUM_VERSION | tr -d '\r\n ')
-          echo "Target Chromium Version: ${CHROME_VER}"
+          # 1. Parse Chromium Version accurately from key-value pairs
+          MAJOR=$(grep 'CHROMIUM_MAJOR=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep 'CHROMIUM_MINOR=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
+          BUILD=$(grep 'CHROMIUM_BUILD=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep 'CHROMIUM_PATCH=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
+          CHROME_VER="${MAJOR}.${MINOR}.${BUILD}.${PATCH}"
+          echo "Parsed Chromium Version: ${CHROME_VER}"
 
           # 2. Create the root .gn file pointing to the Chromium build configuration
           cat << 'EOF' > .gn
@@ -102,23 +106,22 @@ jobs:
           }
           EOF
 
-          # 3. Sparse-checkout build/, buildtools/, tools/, and the root BUILD.gn from upstream
+          # 3. Sparse-checkout using --no-cone mode to allow single files (BUILD.gn) and directories
           echo "Checking out upstream Chromium build system..."
-          git clone --depth 1 --filter=blob:none --sparse --branch "${CHROME_VER}" https://chromium.googlesource.com/chromium/src.git _upstream_chrome || \
-          git clone --depth 1 --filter=blob:none --sparse https://chromium.googlesource.com/chromium/src.git _upstream_chrome
-
+          git clone --depth 1 --filter=blob:none --no-checkout https://chromium.googlesource.com/chromium/src.git _upstream_chrome
           cd _upstream_chrome
-          git sparse-checkout set build buildtools tools BUILD.gn
-          cp -r build ../
-          if [ -d "buildtools" ]; then
-            cp -r buildtools ../
-          fi
-          if [ -d "tools" ]; then
-            cp -r tools ../
-          fi
-          if [ -f "BUILD.gn" ]; then
-            cp BUILD.gn ../
-          fi
+          git fetch --depth 1 origin tag "${CHROME_VER}" || git fetch --depth 1 origin "${CHROME_VER}"
+          git checkout FETCH_HEAD
+
+          git sparse-checkout init --no-cone
+          git sparse-checkout set "build/*" "buildtools/*" "tools/*" "BUILD.gn"
+          git checkout
+
+          # Copy files into project root
+          cp -rn build ../ || true
+          cp -rn buildtools ../ || true
+          cp -rn tools ../ || true
+          cp -n BUILD.gn ../ || true
           cd ..
           rm -rf _upstream_chrome
 
