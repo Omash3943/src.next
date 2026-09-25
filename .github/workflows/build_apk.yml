@@ -125,6 +125,19 @@ jobs:
           cd ..
           rm -rf _upstream_chrome
 
+          # 4. Generate the missing gclient_args.gni file required by build/config/dcheck_always_on.gni
+          mkdir -p build/config
+          cat << 'EOF' > build/config/gclient_args.gni
+          # Generated configuration file for Chromium GN build
+          checkout_android = true
+          checkout_android_native_support = true
+          checkout_google_benchmark = false
+          checkout_src_internal = false
+          cros_boards = ""
+          cros_boards_with_qemu_images = ""
+          generate_location_tags = false
+          EOF
+
       - name: Configure Build Output Directory
         run: |
           export PATH="/usr/local/bin:$HOME/depot_tools:$PATH"
