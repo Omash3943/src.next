@@ -106,27 +106,26 @@ jobs:
           }
           EOF
 
-          # 3. Sparse-checkout build, build_overrides, buildtools, tools, and BUILD.gn
-          echo "Checking out upstream Chromium build system and build_overrides..."
+          # 3. Sparse-checkout build, buildtools, tools, and BUILD.gn
+          echo "Checking out upstream Chromium build system..."
           git clone --depth 1 --filter=blob:none --no-checkout https://chromium.googlesource.com/chromium/src.git _upstream_chrome
           cd _upstream_chrome
           git fetch --depth 1 origin tag "${CHROME_VER}" || git fetch --depth 1 origin "${CHROME_VER}"
           git checkout FETCH_HEAD
 
           git sparse-checkout init --no-cone
-          git sparse-checkout set "build/*" "build_overrides/*" "buildtools/*" "tools/*" "BUILD.gn"
+          git sparse-checkout set "build/*" "buildtools/*" "tools/*" "BUILD.gn"
           git checkout
 
           # Copy files into project root
           cp -rn build ../ || true
-          cp -rn build_overrides ../ || true
           cp -rn buildtools ../ || true
           cp -rn tools ../ || true
           cp -n BUILD.gn ../ || true
           cd ..
           rm -rf _upstream_chrome
 
-          # 4. Ensure gclient_args.gni exists
+          # 4. Generate gclient_args.gni
           mkdir -p build/config
           cat << 'EOF' > build/config/gclient_args.gni
           # Generated configuration file for Chromium GN build
@@ -139,14 +138,14 @@ jobs:
           generate_location_tags = false
           EOF
 
-          # 5. Ensure build_overrides/build.gni fallback exists
+          # 5. Generate build_overrides with build_with_chromium defined
           mkdir -p build_overrides
-          if [ ! -f "build_overrides/build.gni" ]; then
-            cat << 'EOF' > build_overrides/build.gni
+          cat << 'EOF' > build_overrides/build.gni
           # Variable overrides for build
+          build_with_chromium = true
           enable_java_templates = true
+          enable_safe_libcxx = true
           EOF
-          fi
 
       - name: Configure Build Output Directory
         run: |
