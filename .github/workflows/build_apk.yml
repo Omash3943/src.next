@@ -67,18 +67,28 @@ jobs:
             libglib2.0-dev \
             libncurses5 \
             libxml2-dev \
-            libxslt-dev
+            libxslt-dev \
+            unzip \
+            curl
 
-      - name: Install Google depot_tools
+      - name: Install Official Standalone GN Binary & depot_tools
         run: |
+          # Download Google's official standalone native GN binary to avoid depot_tools wrapper issues
+          curl -sL https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest -o gn.zip
+          sudo unzip -o gn.zip -d /usr/local/bin/
+          sudo chmod +x /usr/local/bin/gn
+          /usr/local/bin/gn --version
+
+          # Clone depot_tools for ninja and auxiliary chromium scripts
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
-          # Bootstrap depot_tools to generate python3_bin_reldir.txt and initialize cipd
-          bash $HOME/depot_tools/ensure_bootstrap
+          
+          # Prioritize /usr/local/bin in PATH
+          echo "/usr/local/bin" >> $GITHUB_PATH
           echo "$HOME/depot_tools" >> $GITHUB_PATH
 
       - name: Configure Build Output Directory
         run: |
-          export PATH="$HOME/depot_tools:$PATH"
+          export PATH="/usr/local/bin:$HOME/depot_tools:$PATH"
           export DEPOT_TOOLS_UPDATE=0
           mkdir -p out/AndroidRelease
 
@@ -99,17 +109,12 @@ jobs:
           EOF
           fi
 
-          # Prioritize the repository's native GN binary if available, otherwise use depot_tools gn
-          if [ -f "buildtools/linux64/gn" ]; then
-            chmod +x buildtools/linux64/gn
-            ./buildtools/linux64/gn gen out/AndroidRelease
-          elif command -v gn &> /dev/null; then
-            gn gen out/AndroidRelease
-          fi
+          # Generate Ninja build rules using the native standalone GN binary
+          /usr/local/bin/gn gen out/AndroidRelease
 
       - name: Compile chrome_public_apk via Ninja
         run: |
-          export PATH="$HOME/depot_tools:$PATH"
+          export PATH="/usr/local/bin:$HOME/depot_tools:$PATH"
           export DEPOT_TOOLS_UPDATE=0
           # Limit parallel jobs to available cores to prevent runner out-of-memory crashes
           ninja -C out/AndroidRelease chrome_public_apk -j $(nproc)
