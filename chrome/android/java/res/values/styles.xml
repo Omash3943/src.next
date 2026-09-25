@@ -50,6 +50,18 @@
         <item name="android:windowAnimationStyle">@null</item>
     </style>
 
+    <!-- Floating Freeform Multi-Tab Overlay Theme -->
+    <style name="Theme.Chromium.Floating" parent="Theme.Chromium.Activity">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="windowNoTitle">true</item>
+        <item name="windowActionBar">false</item>
+    </style>
+
     <!-- Extend base theme rather than Theme.Chromium.WithWindowAnimation to avoid values-v27
          navigation bar colors from being applied -->
     <style name="Theme.Chromium.SearchActivity" parent="Base.Theme.Chromium.WithWindowAnimation" />
