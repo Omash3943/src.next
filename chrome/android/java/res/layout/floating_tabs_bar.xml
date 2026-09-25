@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright 2022 The Chromium Authors. All rights reserved.
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/floating_tabs_bar_container"
+    android:layout_width="match_parent"
+    android:layout_height="38dp"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="#E6202124"
+    android:paddingStart="6dp"
+    android:paddingEnd="6dp"
+    android:clickable="true"
+    android:focusable="true">
+
+    <!-- Draggable Header Handle -->
+    <LinearLayout
+        android:id="@+id/floating_drag_handle"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:paddingStart="4dp"
+        android:paddingEnd="8dp"
+        android:contentDescription="Drag Floating Browser"
+        android:background="?attr/selectableItemBackgroundBorderless">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⠿"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+    </LinearLayout>
+
+    <!-- Floating Tab Switcher Pills Container (Tabs 1 to 6) -->
+    <LinearLayout
+        android:id="@+id/floating_tab_pills_container"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/floating_tab_1"
+            android:layout_width="0dp"
+            android:layout_height="28dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="3dp"
+            android:gravity="center"
+            android:text="1"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/floating_tab_2"
+            android:layout_width="0dp"
+            android:layout_height="28dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="3dp"
+            android:gravity="center"
+            android:text="2"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/floating_tab_3"
+            android:layout_width="0dp"
+            android:layout_height="28dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="3dp"
+            android:gravity="center"
+            android:text="3"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/floating_tab_4"
+            android:layout_width="0dp"
+            android:layout_height="28dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="3dp"
+            android:gravity="center"
+            android:text="4"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/floating_tab_5"
+            android:layout_width="0dp"
+            android:layout_height="28dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="3dp"
+            android:gravity="center"
+            android:text="5"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/floating_tab_6"
+            android:layout_width="0dp"
+            android:layout_height="28dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="6"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF" />
+
+    </LinearLayout>
+
+    <!-- Window Action Controls: Minimize and Close -->
+    <LinearLayout
+        android:id="@+id/floating_action_buttons_container"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="6dp">
+
+        <!-- Minimize Button -->
+        <TextView
+            android:id="@+id/floating_min_btn"
+            android:layout_width="30dp"
+            android:layout_height="28dp"
+            android:layout_marginEnd="3dp"
+            android:gravity="center"
+            android:text="—"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#CCCCCC"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Minimize Floating Window" />
+
+        <!-- Close Button -->
+        <TextView
+            android:id="@+id/floating_close_btn"
+            android:layout_width="30dp"
+            android:layout_height="28dp"
+            android:gravity="center"
+            android:text="✕"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#FF5252"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Close Floating Window" />
+    </LinearLayout>
+
+</LinearLayout>
