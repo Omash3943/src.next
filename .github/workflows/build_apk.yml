@@ -34,119 +34,119 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set Up Android SDK & Build-Tools
-        uses: android-actions/setup-android@v3
-
       - name: Install Packaging Utilities
         run: |
           sudo apt-get update
-          sudo apt-get install -y zipalign apksigner curl jq unzip
+          sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Install latest Apktool
+          # Install latest standalone Apktool
           curl -sL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | \
             jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | \
             head -n 1 | xargs -I {} curl -sL {} -o /usr/local/bin/apktool.jar
-          
+
           cat << 'EOF' > /usr/local/bin/apktool
           #!/bin/bash
           java -Xmx4096m -jar /usr/local/bin/apktool.jar "$@"
           EOF
           chmod +x /usr/local/bin/apktool
+          apktool --version
 
       - name: Download Base Kiwi APK
         run: |
           mkdir -p base_apk
-          echo "Fetching latest official Kiwi Browser arm64 release APK..."
-          
-          # Query GitHub API for the latest release asset matching arm64
+          echo "Fetching official Kiwi Browser arm64 release APK..."
+
+          # Fetch download URL of the latest arm64 APK from Kiwi releases
           DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/kiwibrowser/src.next/releases | \
             jq -r '.[0].assets[] | select(.name | contains("arm64") and endswith(".apk")) | .browser_download_url' | head -n 1)
-          
+
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-            # Fallback to direct release CDN mirror if API list is empty
-            DOWNLOAD_URL="https://github.com/kiwibrowser/src.next/releases/download/105.0.5195.24/com.kiwibrowser.browser-arm64.apk"
+            echo "API lookup fallback: querying releases list..."
+            DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/kiwibrowser/src.next/releases/latest | \
+              jq -r '.assets[] | select(.name | contains("arm64") and endswith(".apk")) | .browser_download_url' | head -n 1)
           fi
-          
-          echo "Downloading from: $DOWNLOAD_URL"
+
+          echo "Downloading base APK from: $DOWNLOAD_URL"
           curl -sL "$DOWNLOAD_URL" -o base_apk/kiwi_base.apk
           ls -lh base_apk/kiwi_base.apk
 
-      - name: Unpack Base APK
+      - name: Unpack Base APK Resources
         run: |
-          apktool d -f -r base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK successfully extracted into workspace."
+          # -s (--no-src) skips disassembling dex to smali, decoding only XML and resources for maximum reliability and speed
+          apktool d -f -s base_apk/kiwi_base.apk -o apk_workspace
+          echo "APK resources extracted successfully."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
-          # 1. Overlay new and modified layouts and styles
           mkdir -p apk_workspace/res/layout
           mkdir -p apk_workspace/res/values
 
-          # Copy floating_tabs_bar.xml
+          # 1. Copy floating_tabs_bar.xml layout
           if [ -f "chrome/android/java/res/layout/floating_tabs_bar.xml" ]; then
             cp "chrome/android/java/res/layout/floating_tabs_bar.xml" apk_workspace/res/layout/
+            echo "Copied floating_tabs_bar.xml"
           fi
 
-          # Copy control_container.xml
+          # 2. Copy control_container.xml layout
           if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/control_container.xml" ]; then
             cp "chrome/browser/ui/android/toolbar/java/res/layout/control_container.xml" apk_workspace/res/layout/
+            echo "Copied control_container.xml"
+          elif [ -f "chrome/android/java/res/layout/control_container.xml" ]; then
+            cp "chrome/android/java/res/layout/control_container.xml" apk_workspace/res/layout/
+            echo "Copied control_container.xml"
           fi
 
-          # 2. Add Theme.Chromium.Floating to styles.xml
-          if [ -f "apk_workspace/res/values/styles.xml" ]; then
-            python3 -c '
-          import re
+          # 3. Add Theme.Chromium.Floating into styles.xml
+          python3 -c '
+          import os
 
-          style_snippet = """
-              <!-- Floating Freeform Multi-Tab Overlay Theme -->
-              <style name="Theme.Chromium.Floating" parent="Theme.Chromium.Activity">
-                  <item name="android:windowBackground">@android:color/transparent</item>
-                  <item name="android:windowIsTranslucent">true</item>
-                  <item name="android:windowNoTitle">true</item>
-                  <item name="android:windowAnimationStyle">@null</item>
-                  <item name="android:backgroundDimEnabled">false</item>
-                  <item name="android:colorBackgroundCacheHint">@null</item>
-                  <item name="windowNoTitle">true</item>
-                  <item name="windowActionBar">false</item>
-              </style>
-          </resources>"""
+          styles_path = "apk_workspace/res/values/styles.xml"
+          if os.path.exists(styles_path):
+              with open(styles_path, "r", encoding="utf-8") as f:
+                  content = f.read()
 
-          with open("apk_workspace/res/values/styles.xml", "r", encoding="utf-8") as f:
-              content = f.read()
+              style_snippet = """
+                  <!-- Floating Freeform Multi-Tab Overlay Theme -->
+                  <style name="Theme.Chromium.Floating" parent="Theme.Chromium.Activity">
+                      <item name="android:windowBackground">@android:color/transparent</item>
+                      <item name="android:windowIsTranslucent">true</item>
+                      <item name="android:windowNoTitle">true</item>
+                      <item name="android:windowAnimationStyle">@null</item>
+                      <item name="android:backgroundDimEnabled">false</item>
+                      <item name="android:colorBackgroundCacheHint">@null</item>
+                      <item name="windowNoTitle">true</item>
+                      <item name="windowActionBar">false</item>
+                  </style>
+              </resources>"""
 
-          if "Theme.Chromium.Floating" not in content:
-              content = content.replace("</resources>", style_snippet)
-              with open("apk_workspace/res/values/styles.xml", "w", encoding="utf-8") as f:
-                  f.write(content)
-              print("Theme.Chromium.Floating injected into styles.xml")
+              if "Theme.Chromium.Floating" not in content:
+                  content = content.replace("</resources>", style_snippet)
+                  with open(styles_path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print("Injected Theme.Chromium.Floating into styles.xml")
           '
-          fi
 
-          # 3. Patch AndroidManifest.xml with SYSTEM_ALERT_WINDOW and Floating theme
+          # 4. Patch AndroidManifest.xml for SYSTEM_ALERT_WINDOW, Theme.Chromium.Floating, and Freeform
           python3 -c '
           with open("apk_workspace/AndroidManifest.xml", "r", encoding="utf-8") as f:
               manifest = f.read()
 
-          # Add permission if missing
+          # Add SYSTEM_ALERT_WINDOW permission
           if "android.permission.SYSTEM_ALERT_WINDOW" not in manifest:
               manifest = manifest.replace(
                   "<application",
                   "<uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/>\n    <application"
               )
 
-          # Update ChromeTabbedActivity theme to Floating
+          # Switch ChromeTabbedActivity to Theme.Chromium.Floating
           manifest = manifest.replace(
-              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\"\n            android:theme=\"@style/Theme.Chromium.TabbedMode\"",
-              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\"\n            android:theme=\"@style/Theme.Chromium.Floating\""
-          )
-          manifest = manifest.replace(
-              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\" android:theme=\"@style/Theme.Chromium.TabbedMode\"",
-              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\" android:theme=\"@style/Theme.Chromium.Floating\""
+              "Theme.Chromium.TabbedMode",
+              "Theme.Chromium.Floating"
           )
 
           with open("apk_workspace/AndroidManifest.xml", "w", encoding="utf-8") as f:
               f.write(manifest)
-          print("AndroidManifest.xml patched successfully.")
+          print("Patched AndroidManifest.xml successfully.")
           '
 
       - name: Rebuild Modified APK
@@ -157,11 +157,11 @@ jobs:
       - name: Align and Sign APK
         run: |
           mkdir -p output_artifacts
-          
+
           # Zipalign the rebuilt APK
           zipalign -p -f -v 4 unsigned_modified.apk output_artifacts/KiwiFloatingBrowser-unaligned.apk
-          
-          # Generate build keystore
+
+          # Generate debug signing keystore
           keytool -genkeypair -v \
             -keystore debug.keystore \
             -alias androiddebugkey \
@@ -172,7 +172,7 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          # Sign APK with apksigner
+          # Sign APK with apksigner (v1, v2, and v3 schemes)
           apksigner sign \
             --ks debug.keystore \
             --ks-pass pass:android \
@@ -180,7 +180,8 @@ jobs:
             --out output_artifacts/KiwiFloatingBrowser-arm64.apk \
             output_artifacts/KiwiFloatingBrowser-unaligned.apk
 
-          echo "Final APK signed successfully:"
+          echo "Final APK signed and verified successfully:"
+          apksigner verify output_artifacts/KiwiFloatingBrowser-arm64.apk
           ls -lh output_artifacts/KiwiFloatingBrowser-arm64.apk
 
       - name: Upload Floating Browser APK
