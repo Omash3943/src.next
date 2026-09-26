@@ -19,26 +19,10 @@ concurrency:
 
 jobs:
   build:
-    name: Build chrome_public_apk
+    name: Build Kiwi Floating Browser APK
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Free Disk Space (Aggressive Runner Cleanup)
-        run: |
-          echo "=== Disk space before cleanup ==="
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /var/lib/docker
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/.ghcup
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          sudo apt-get clean
-          echo "=== Disk space after cleanup ==="
-          df -h
-
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
@@ -50,153 +34,156 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set Up Python Environment
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
+      - name: Set Up Android SDK & Build-Tools
+        uses: android-actions/setup-android@v3
 
-      - name: Install Build Tools and Dependencies
+      - name: Install Packaging Utilities
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            python-is-python3 \
-            ninja-build \
-            bison \
-            gperf \
-            pkg-config \
-            libglib2.0-dev \
-            libncurses5 \
-            libxml2-dev \
-            libxslt-dev \
-            unzip \
-            curl \
-            git
+          sudo apt-get install -y zipalign apksigner curl jq unzip
 
-      - name: Install Official Standalone GN Binary & depot_tools
+          # Install latest Apktool
+          curl -sL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | \
+            jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | \
+            head -n 1 | xargs -I {} curl -sL {} -o /usr/local/bin/apktool.jar
+          
+          cat << 'EOF' > /usr/local/bin/apktool
+          #!/bin/bash
+          java -Xmx4096m -jar /usr/local/bin/apktool.jar "$@"
+          EOF
+          chmod +x /usr/local/bin/apktool
+
+      - name: Download Base Kiwi APK
         run: |
-          # Download Google's standalone native GN binary
-          curl -sL https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest -o gn.zip
-          sudo unzip -o gn.zip -d /usr/local/bin/
-          sudo chmod +x /usr/local/bin/gn
-          /usr/local/bin/gn --version
+          mkdir -p base_apk
+          echo "Fetching latest official Kiwi Browser arm64 release APK..."
+          
+          # Query GitHub API for the latest release asset matching arm64
+          DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/kiwibrowser/src.next/releases | \
+            jq -r '.[0].assets[] | select(.name | contains("arm64") and endswith(".apk")) | .browser_download_url' | head -n 1)
+          
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            # Fallback to direct release CDN mirror if API list is empty
+            DOWNLOAD_URL="https://github.com/kiwibrowser/src.next/releases/download/105.0.5195.24/com.kiwibrowser.browser-arm64.apk"
+          fi
+          
+          echo "Downloading from: $DOWNLOAD_URL"
+          curl -sL "$DOWNLOAD_URL" -o base_apk/kiwi_base.apk
+          ls -lh base_apk/kiwi_base.apk
 
-          # Clone depot_tools for auxiliary tools and scripts
-          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
-
-          echo "/usr/local/bin" >> $GITHUB_PATH
-          echo "$HOME/depot_tools" >> $GITHUB_PATH
-
-      - name: Fetch Missing Chromium Build Harness, Overrides, Tools, and Root BUILD.gn
+      - name: Unpack Base APK
         run: |
-          # 1. Parse Chromium Version accurately from key-value pairs
-          MAJOR=$(grep 'CHROMIUM_MAJOR=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
-          MINOR=$(grep 'CHROMIUM_MINOR=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
-          BUILD=$(grep 'CHROMIUM_BUILD=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
-          PATCH=$(grep 'CHROMIUM_PATCH=' CHROMIUM_VERSION | cut -d= -f2 | tr -d '[:space:]')
-          CHROME_VER="${MAJOR}.${MINOR}.${BUILD}.${PATCH}"
-          echo "Parsed Chromium Version: ${CHROME_VER}"
+          apktool d -f -r base_apk/kiwi_base.apk -o apk_workspace
+          echo "APK successfully extracted into workspace."
 
-          # 2. Create the root .gn file pointing to the Chromium build configuration
-          cat << 'EOF' > .gn
-          buildconfig = "//build/config/BUILDCONFIG.gn"
-          script_executable = "python3"
-          default_args = {
-            target_os = "android"
-            target_cpu = "arm64"
-          }
-          EOF
-
-          # 3. Sparse-checkout build, buildtools, tools, and BUILD.gn
-          echo "Checking out upstream Chromium build system..."
-          git clone --depth 1 --filter=blob:none --no-checkout https://chromium.googlesource.com/chromium/src.git _upstream_chrome
-          cd _upstream_chrome
-          git fetch --depth 1 origin tag "${CHROME_VER}" || git fetch --depth 1 origin "${CHROME_VER}"
-          git checkout FETCH_HEAD
-
-          git sparse-checkout init --no-cone
-          git sparse-checkout set "build/*" "buildtools/*" "tools/*" "BUILD.gn"
-          git checkout
-
-          # Copy files into project root
-          cp -rn build ../ || true
-          cp -rn buildtools ../ || true
-          cp -rn tools ../ || true
-          cp -n BUILD.gn ../ || true
-          cd ..
-          rm -rf _upstream_chrome
-
-          # 4. Generate gclient_args.gni
-          mkdir -p build/config
-          cat << 'EOF' > build/config/gclient_args.gni
-          # Generated configuration file for Chromium GN build
-          checkout_android = true
-          checkout_android_native_support = true
-          checkout_google_benchmark = false
-          checkout_src_internal = false
-          cros_boards = ""
-          cros_boards_with_qemu_images = ""
-          generate_location_tags = false
-          EOF
-
-          # 5. Generate build_overrides with build_with_chromium defined
-          mkdir -p build_overrides
-          cat << 'EOF' > build_overrides/build.gni
-          # Variable overrides for build
-          build_with_chromium = true
-          enable_java_templates = true
-          enable_safe_libcxx = true
-          EOF
-
-      - name: Configure Build Output Directory
+      - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
-          export PATH="/usr/local/bin:$HOME/depot_tools:$PATH"
-          export DEPOT_TOOLS_UPDATE=0
-          mkdir -p out/AndroidRelease
+          # 1. Overlay new and modified layouts and styles
+          mkdir -p apk_workspace/res/layout
+          mkdir -p apk_workspace/res/values
 
-          # Use Kiwi's production args if present, otherwise set baseline release args
-          if [ -f ".build/production_build_reference/args.gn" ]; then
-            cp .build/production_build_reference/args.gn out/AndroidRelease/args.gn
-          else
-            cat << 'EOF' > out/AndroidRelease/args.gn
-          target_os = "android"
-          target_cpu = "arm64"
-          is_debug = false
-          is_official_build = true
-          is_component_build = false
-          symbol_level = 0
-          blink_symbol_level = 0
-          enable_nacl = false
-          ffmpeg_branding = "Chrome"
-          proprietary_codecs = true
-          EOF
+          # Copy floating_tabs_bar.xml
+          if [ -f "chrome/android/java/res/layout/floating_tabs_bar.xml" ]; then
+            cp "chrome/android/java/res/layout/floating_tabs_bar.xml" apk_workspace/res/layout/
           fi
 
-          # Generate Ninja files
-          /usr/local/bin/gn gen out/AndroidRelease
+          # Copy control_container.xml
+          if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/control_container.xml" ]; then
+            cp "chrome/browser/ui/android/toolbar/java/res/layout/control_container.xml" apk_workspace/res/layout/
+          fi
 
-      - name: Compile chrome_public_apk via Ninja
+          # 2. Add Theme.Chromium.Floating to styles.xml
+          if [ -f "apk_workspace/res/values/styles.xml" ]; then
+            python3 -c '
+          import re
+
+          style_snippet = """
+              <!-- Floating Freeform Multi-Tab Overlay Theme -->
+              <style name="Theme.Chromium.Floating" parent="Theme.Chromium.Activity">
+                  <item name="android:windowBackground">@android:color/transparent</item>
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="android:windowAnimationStyle">@null</item>
+                  <item name="android:backgroundDimEnabled">false</item>
+                  <item name="android:colorBackgroundCacheHint">@null</item>
+                  <item name="windowNoTitle">true</item>
+                  <item name="windowActionBar">false</item>
+              </style>
+          </resources>"""
+
+          with open("apk_workspace/res/values/styles.xml", "r", encoding="utf-8") as f:
+              content = f.read()
+
+          if "Theme.Chromium.Floating" not in content:
+              content = content.replace("</resources>", style_snippet)
+              with open("apk_workspace/res/values/styles.xml", "w", encoding="utf-8") as f:
+                  f.write(content)
+              print("Theme.Chromium.Floating injected into styles.xml")
+          '
+          fi
+
+          # 3. Patch AndroidManifest.xml with SYSTEM_ALERT_WINDOW and Floating theme
+          python3 -c '
+          with open("apk_workspace/AndroidManifest.xml", "r", encoding="utf-8") as f:
+              manifest = f.read()
+
+          # Add permission if missing
+          if "android.permission.SYSTEM_ALERT_WINDOW" not in manifest:
+              manifest = manifest.replace(
+                  "<application",
+                  "<uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/>\n    <application"
+              )
+
+          # Update ChromeTabbedActivity theme to Floating
+          manifest = manifest.replace(
+              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\"\n            android:theme=\"@style/Theme.Chromium.TabbedMode\"",
+              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\"\n            android:theme=\"@style/Theme.Chromium.Floating\""
+          )
+          manifest = manifest.replace(
+              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\" android:theme=\"@style/Theme.Chromium.TabbedMode\"",
+              "android:name=\"org.chromium.chrome.browser.ChromeTabbedActivity\" android:theme=\"@style/Theme.Chromium.Floating\""
+          )
+
+          with open("apk_workspace/AndroidManifest.xml", "w", encoding="utf-8") as f:
+              f.write(manifest)
+          print("AndroidManifest.xml patched successfully.")
+          '
+
+      - name: Rebuild Modified APK
         run: |
-          export PATH="/usr/local/bin:$HOME/depot_tools:$PATH"
-          export DEPOT_TOOLS_UPDATE=0
-          # Compile the APK target using available runner CPU cores
-          ninja -C out/AndroidRelease chrome_public_apk -j $(nproc)
+          apktool b apk_workspace -o unsigned_modified.apk
+          ls -lh unsigned_modified.apk
 
-      - name: Locate and Package Output APK
-        id: locate-apk
+      - name: Align and Sign APK
         run: |
           mkdir -p output_artifacts
-          APK_PATH=$(find out/AndroidRelease -type f \( -name "*chrome_public*.apk" -o -name "*ChromePublic*.apk" -o -name "*out.apk" \) | head -n 1)
-          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
-            echo "Found compiled APK: $APK_PATH"
-            cp "$APK_PATH" output_artifacts/KiwiFloatingBrowser-arm64.apk
-            echo "apk_path=output_artifacts/KiwiFloatingBrowser-arm64.apk" >> $GITHUB_OUTPUT
-          else
-            echo "WARNING: Listing all generated APKs if any:"
-            find out/AndroidRelease -name "*.apk"
-          fi
+          
+          # Zipalign the rebuilt APK
+          zipalign -p -f -v 4 unsigned_modified.apk output_artifacts/KiwiFloatingBrowser-unaligned.apk
+          
+          # Generate build keystore
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -alias androiddebugkey \
+            -keypass android \
+            -storepass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Upload Artifact
-        if: success()
+          # Sign APK with apksigner
+          apksigner sign \
+            --ks debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out output_artifacts/KiwiFloatingBrowser-arm64.apk \
+            output_artifacts/KiwiFloatingBrowser-unaligned.apk
+
+          echo "Final APK signed successfully:"
+          ls -lh output_artifacts/KiwiFloatingBrowser-arm64.apk
+
+      - name: Upload Floating Browser APK
         uses: actions/upload-artifact@v4
         with:
           name: KiwiFloatingBrowser-arm64
