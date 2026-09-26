@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Download APKEditor V1.4.9 (contains ARSCLib 1.3.9 fixing drawable alias bugs)
+          # Download APKEditor V1.4.9
           curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar" -o /usr/local/bin/APKEditor.jar
           
           cat << 'EOF' > /usr/local/bin/apkeditor
@@ -47,7 +47,6 @@ jobs:
           java -Xmx4096m -jar /usr/local/bin/APKEditor.jar "$@"
           EOF
           chmod +x /usr/local/bin/apkeditor
-          apkeditor -version || true
 
       - name: Download Official Kiwi Base APK
         env:
@@ -71,61 +70,16 @@ jobs:
           # Verify integrity
           unzip -t base_apk/kiwi_base.apk | head -n 5
 
-      - name: Decompile APK via APKEditor (Skipping Smali with -dex)
+      - name: Decompile APK via APKEditor (Using -t arsc and -dex)
         run: |
-          # Use -dex to skip Smali extraction, preventing runner memory exhaustion
-          apkeditor d -dex -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted cleanly."
-
-      - name: Sanitize Decompiled XML Aliases
-        run: |
-          # Fix any malformed self-closing tags like <drawable name="..."/>@drawable
-          find apk_workspace -name "*.xml" -exec sed -i 's|<\([a-zA-Z_-]*\) name="\([^"]*\)"/>@|<\1 name="\2">@|g' {} +
-          echo "XML tags sanitized."
+          # -t arsc preserves binary resources.arsc intact, completely bypassing drawables.xml encoding issues
+          # -dex keeps raw classes.dex to prevent memory crashes
+          apkeditor d -t arsc -dex -i base_apk/kiwi_base.apk -o apk_workspace
+          echo "APK extracted with binary ARSC preserved."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
-          # 1. Register new IDs in public.xml so APKEditor can encode them
-          python3 -c '
-          import os, glob, re
-
-          public_files = glob.glob("apk_workspace/**/values/public.xml", recursive=True)
-          needed_ids = [
-              "floating_tabs_bar_container",
-              "floating_drag_handle",
-              "floating_tab_pills_container",
-              "floating_tab_1",
-              "floating_tab_2",
-              "floating_tab_3",
-              "floating_tab_4",
-              "floating_tab_5",
-              "floating_tab_6",
-              "floating_action_buttons_container",
-              "floating_min_btn",
-              "floating_close_btn"
-          ]
-
-          for pub in public_files:
-              with open(pub, "r", encoding="utf-8") as f:
-                  text = f.read()
-
-              id_matches = [int(x, 16) for x in re.findall(r"id=\"(0x7f09[0-9a-fA-F]+)\"", text)]
-              next_id = max(id_matches) + 1 if id_matches else 0x7f09ffff
-
-              entries = ""
-              for name in needed_ids:
-                  if f"name=\"{name}\"" not in text:
-                      entries += f"    <public type=\"id\" name=\"{name}\" id=\"{hex(next_id)}\" />\n"
-                      next_id += 1
-
-              if entries:
-                  text = text.replace("</resources>", entries + "</resources>")
-                  with open(pub, "w", encoding="utf-8") as f:
-                      f.write(text)
-                  print(f"Registered floating dock IDs in {pub}")
-          '
-
-          # 2. Embed Floating Tabs Dock Bar directly into control_container.xml
+          # 1. Embed Floating Tabs Dock Bar directly into control_container.xml
           python3 -c '
           import os, glob
 
@@ -291,7 +245,7 @@ jobs:
                   print(f"Dock bar embedded into {cc}")
           '
 
-          # 3. Patch AndroidManifest.xml: set FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
+          # 2. Patch AndroidManifest.xml: set FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
           python3 -c '
           import os, glob
           import xml.etree.ElementTree as ET
@@ -317,7 +271,7 @@ jobs:
                       act_name = act.attrib.get(f"{{{ANDROID_NS}}}name", "")
                       if "ChromeTabbedActivity" in act_name:
                           act.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
-                          # Use the built-in translucent theme present in Kiwi resources
+                          # Point ChromeTabbedActivity to the pre-existing FakeTranslucent theme
                           act.set(f"{{{ANDROID_NS}}}theme", "@style/Theme.Chromium.Activity.FakeTranslucent")
                           print(f"Configured {act_name} with FakeTranslucent theme & resizeableActivity")
 
