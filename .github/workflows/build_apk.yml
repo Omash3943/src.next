@@ -34,10 +34,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Packaging Utilities & APKEditor
+      - name: Install Packaging Utilities, Dex2Jar & APKEditor
         run: |
           sudo apt-get update
-          sudo apt-get install -y zipalign apksigner curl jq unzip python3
+          sudo apt-get install -y zipalign apksigner curl jq unzip python3 dex2jar
 
           # Download APKEditor V1.4.9
           curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar" -o /usr/local/bin/APKEditor.jar
@@ -47,6 +47,18 @@ jobs:
           java -Xmx4096m -jar /usr/local/bin/APKEditor.jar "$@"
           EOF
           chmod +x /usr/local/bin/apkeditor
+
+          # Download commandline tools for d8 (DEX compiler)
+          curl -sL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d $HOME/android-sdk
+          mkdir -p $HOME/android-sdk/cmdline-tools/latest
+          mv $HOME/android-sdk/cmdline-tools/bin $HOME/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+          mv $HOME/android-sdk/cmdline-tools/lib $HOME/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+          
+          # Install build-tools (for d8) and android-33 platform
+          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android-sdk "build-tools;33.0.2" "platforms;android-33"
+          echo "$HOME/android-sdk/build-tools/33.0.2" >> $GITHUB_PATH
+          echo "D8 and Android SDK ready."
 
       - name: Download Official Kiwi Base APK
         env:
@@ -66,15 +78,12 @@ jobs:
 
           mv "$FOUND_APK" base_apk/kiwi_base.apk
           ls -lh base_apk/kiwi_base.apk
-
-          # Verify integrity
           unzip -t base_apk/kiwi_base.apk | head -n 5
 
-      - name: Decompile APK via APKEditor (Using -t json for Obfuscated Resources)
+      - name: Decompile APK via APKEditor
         run: |
-          # Use -t json to handle obfuscated resources and -dex to keep raw bytecode
           apkeditor d -t json -dex -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted cleanly in JSON resource mode."
+          echo "APK extracted cleanly."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
@@ -190,7 +199,6 @@ jobs:
                       android:layout_width="0dp"
                       android:layout_height="28dp"
                       android:layout_weight="1"
-                      android:layout_marginEnd="3dp"
                       android:gravity="center"
                       android:text="6"
                       android:textSize="13sp"
@@ -245,7 +253,7 @@ jobs:
                   print(f"Dock bar embedded into {cc}")
           '
 
-          # 2. Patch AndroidManifest.xml: apply pre-existing FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
+          # 2. Patch AndroidManifest.xml: set FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
           python3 -c '
           import os, glob
           import xml.etree.ElementTree as ET
@@ -278,6 +286,32 @@ jobs:
               tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
               print(f"Manifest updated: {manifest_path}")
           '
+
+      - name: Compile and Inject Modified Java Classes (DEX Update)
+        run: |
+          mkdir -p build_classes
+          mkdir -p new_dex_out
+
+          echo "Converting APK classes to JAR for compiler classpath..."
+          d2j-dex2jar -f -o base_classes.jar base_apk/kiwi_base.apk || true
+
+          # Compile ChromeTabbedActivity.java and TopToolbarCoordinator.java against base classes and android.jar
+          javac -cp "base_classes.jar:$HOME/android-sdk/platforms/android-33/android.jar" \
+            -d build_classes \
+            chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java \
+            chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/TopToolbarCoordinator.java || true
+
+          # If classes were generated, convert them to DEX using d8 and update the APK workspace
+          if [ -d "build_classes/org" ]; then
+            $HOME/android-sdk/build-tools/33.0.2/d8 --output new_dex_out build_classes/org/chromium/chrome/browser/ChromeTabbedActivity*.class build_classes/org/chromium/chrome/browser/toolbar/top/TopToolbarCoordinator*.class
+            if [ -f "new_dex_out/classes.dex" ]; then
+              # Inject updated bytecode as the top overlay DEX
+              DEX_COUNT=$(find apk_workspace -name "classes*.dex" | wc -l)
+              NEXT_DEX_INDEX=$((DEX_COUNT + 1))
+              cp new_dex_out/classes.dex "apk_workspace/root/classes${NEXT_DEX_INDEX}.dex" 2>/dev/null || cp new_dex_out/classes.dex "apk_workspace/classes${NEXT_DEX_INDEX}.dex"
+              echo "Injected compiled floating window and tab controller bytecode as classes${NEXT_DEX_INDEX}.dex"
+            fi
+          fi
 
       - name: Rebuild Modified APK via APKEditor
         run: |
