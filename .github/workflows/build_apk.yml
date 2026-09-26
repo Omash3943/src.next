@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-kiwi-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -39,16 +39,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Download latest APKEditor by REAndroid (bypasses Apktool duplicate attribute bugs)
-          APKEDITOR_URL=$(curl -sL https://api.github.com/repos/REAndroid/APKEditor/releases/latest | \
-            jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | head -n 1)
-          
-          if [ -z "$APKEDITOR_URL" ] || [ "$APKEDITOR_URL" = "null" ]; then
-            APKEDITOR_URL="https://github.com/REAndroid/APKEditor/releases/download/V1.4.1/APKEditor-1.4.1.jar"
-          fi
-
-          echo "Downloading APKEditor from: $APKEDITOR_URL"
-          curl -sL "$APKEDITOR_URL" -o /usr/local/bin/APKEditor.jar
+          # Download latest APKEditor
+          curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.1/APKEditor-1.4.1.jar" -o /usr/local/bin/APKEditor.jar
           
           cat << 'EOF' > /usr/local/bin/apkeditor
           #!/bin/bash
@@ -60,122 +52,241 @@ jobs:
         run: |
           mkdir -p base_apk
           echo "Fetching official Kiwi Browser arm64 release APK..."
-
-          DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/kiwibrowser/src.next/releases | \
-            jq -r '.[0].assets[] | select(.name | contains("arm64") and endswith(".apk")) | .browser_download_url' | head -n 1)
-
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-            DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/kiwibrowser/src.next/releases/latest | \
-              jq -r '.assets[] | select(.name | contains("arm64") and endswith(".apk")) | .browser_download_url' | head -n 1)
-          fi
-
-          echo "Downloading base APK from: $DOWNLOAD_URL"
-          curl -sL "$DOWNLOAD_URL" -o base_apk/kiwi_base.apk
+          curl -sL "https://github.com/kiwibrowser/src.next/releases/download/105.0.5195.24/com.kiwibrowser.browser-arm64.apk" -o base_apk/kiwi_base.apk
           ls -lh base_apk/kiwi_base.apk
 
       - name: Decompile APK via APKEditor
         run: |
           apkeditor d -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted cleanly with APKEditor."
+          echo "APK extracted cleanly."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
-          mkdir -p apk_workspace/root/res/layout
-          mkdir -p apk_workspace/root/res/values
-
-          # 1. Copy floating_tabs_bar.xml
-          if [ -f "chrome/android/java/res/layout/floating_tabs_bar.xml" ]; then
-            cp "chrome/android/java/res/layout/floating_tabs_bar.xml" apk_workspace/root/res/layout/
-            echo "Copied floating_tabs_bar.xml"
-          fi
-
-          # 2. Copy control_container.xml
-          if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/control_container.xml" ]; then
-            cp "chrome/browser/ui/android/toolbar/java/res/layout/control_container.xml" apk_workspace/root/res/layout/
-            echo "Copied control_container.xml"
-          elif [ -f "chrome/android/java/res/layout/control_container.xml" ]; then
-            cp "chrome/android/java/res/layout/control_container.xml" apk_workspace/root/res/layout/
-            echo "Copied control_container.xml"
-          fi
-
-          # 3. Add Theme.Chromium.Floating into styles.xml using safe XML parsing
+          # 1. Embed Floating Tabs Dock Bar directly into control_container.xml to avoid undefined layout references
           python3 -c '
           import os, glob
 
-          # Find styles.xml in decompiled root
-          styles_files = glob.glob("apk_workspace/**/values/styles.xml", recursive=True)
-          if not styles_files:
-              styles_files = ["apk_workspace/root/res/values/styles.xml"]
+          dock_view = """
+          <!-- Embedded Pinned Floating Multi-Tab Dock Bar -->
+          <LinearLayout
+              android:id="@+id/floating_tabs_bar_container"
+              android:layout_width="match_parent"
+              android:layout_height="38dp"
+              android:orientation="horizontal"
+              android:gravity="center_vertical"
+              android:background="#E6202124"
+              android:paddingStart="6dp"
+              android:paddingEnd="6dp"
+              android:clickable="true"
+              android:focusable="true">
 
-          style_snippet = """
-              <!-- Floating Freeform Multi-Tab Overlay Theme -->
-              <style name="Theme.Chromium.Floating" parent="Theme.Chromium.Activity">
-                  <item name="android:windowBackground">@android:color/transparent</item>
-                  <item name="android:windowIsTranslucent">true</item>
-                  <item name="android:windowNoTitle">true</item>
-                  <item name="android:windowAnimationStyle">@null</item>
-                  <item name="android:backgroundDimEnabled">false</item>
-                  <item name="android:colorBackgroundCacheHint">@null</item>
-                  <item name="windowNoTitle">true</item>
-                  <item name="windowActionBar">false</item>
-              </style>
-          </resources>"""
+              <LinearLayout
+                  android:id="@+id/floating_drag_handle"
+                  android:layout_width="wrap_content"
+                  android:layout_height="match_parent"
+                  android:gravity="center"
+                  android:paddingStart="4dp"
+                  android:paddingEnd="8dp">
+                  <TextView
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="⠿"
+                      android:textSize="18sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF" />
+              </LinearLayout>
 
-          for path in styles_files:
-              if os.path.exists(path):
-                  with open(path, "r", encoding="utf-8") as f:
-                      content = f.read()
-                  if "Theme.Chromium.Floating" not in content:
-                      content = content.replace("</resources>", style_snippet)
-                      with open(path, "w", encoding="utf-8") as f:
-                          f.write(content)
-                      print(f"Injected Theme.Chromium.Floating into {path}")
+              <LinearLayout
+                  android:id="@+id/floating_tab_pills_container"
+                  android:layout_width="0dp"
+                  android:layout_height="match_parent"
+                  android:layout_weight="1"
+                  android:gravity="center_vertical"
+                  android:orientation="horizontal">
+
+                  <TextView
+                      android:id="@+id/floating_tab_1"
+                      android:layout_width="0dp"
+                      android:layout_height="28dp"
+                      android:layout_weight="1"
+                      android:layout_marginEnd="3dp"
+                      android:gravity="center"
+                      android:text="1"
+                      android:textSize="13sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF"
+                      android:background="#33FFFFFF" />
+
+                  <TextView
+                      android:id="@+id/floating_tab_2"
+                      android:layout_width="0dp"
+                      android:layout_height="28dp"
+                      android:layout_weight="1"
+                      android:layout_marginEnd="3dp"
+                      android:gravity="center"
+                      android:text="2"
+                      android:textSize="13sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF"
+                      android:background="#33FFFFFF" />
+
+                  <TextView
+                      android:id="@+id/floating_tab_3"
+                      android:layout_width="0dp"
+                      android:layout_height="28dp"
+                      android:layout_weight="1"
+                      android:layout_marginEnd="3dp"
+                      android:gravity="center"
+                      android:text="3"
+                      android:textSize="13sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF"
+                      android:background="#33FFFFFF" />
+
+                  <TextView
+                      android:id="@+id/floating_tab_4"
+                      android:layout_width="0dp"
+                      android:layout_height="28dp"
+                      android:layout_weight="1"
+                      android:layout_marginEnd="3dp"
+                      android:gravity="center"
+                      android:text="4"
+                      android:textSize="13sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF"
+                      android:background="#33FFFFFF" />
+
+                  <TextView
+                      android:id="@+id/floating_tab_5"
+                      android:layout_width="0dp"
+                      android:layout_height="28dp"
+                      android:layout_weight="1"
+                      android:layout_marginEnd="3dp"
+                      android:gravity="center"
+                      android:text="5"
+                      android:textSize="13sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF"
+                      android:background="#33FFFFFF" />
+
+                  <TextView
+                      android:id="@+id/floating_tab_6"
+                      android:layout_width="0dp"
+                      android:layout_height="28dp"
+                      android:layout_weight="1"
+                      android:gravity="center"
+                      android:text="6"
+                      android:textSize="13sp"
+                      android:textStyle="bold"
+                      android:textColor="#FFFFFF"
+                      android:background="#33FFFFFF" />
+              </LinearLayout>
+
+              <LinearLayout
+                  android:id="@+id/floating_action_buttons_container"
+                  android:layout_width="wrap_content"
+                  android:layout_height="match_parent"
+                  android:gravity="center"
+                  android:orientation="horizontal"
+                  android:paddingStart="6dp">
+
+                  <TextView
+                      android:id="@+id/floating_min_btn"
+                      android:layout_width="30dp"
+                      android:layout_height="28dp"
+                      android:layout_marginEnd="3dp"
+                      android:gravity="center"
+                      android:text="—"
+                      android:textSize="14sp"
+                      android:textStyle="bold"
+                      android:textColor="#CCCCCC" />
+
+                  <TextView
+                      android:id="@+id/floating_close_btn"
+                      android:layout_width="30dp"
+                      android:layout_height="28dp"
+                      android:gravity="center"
+                      android:text="✕"
+                      android:textSize="14sp"
+                      android:textStyle="bold"
+                      android:textColor="#FF5252" />
+              </LinearLayout>
+          </LinearLayout>
+          """
+
+          cc_files = glob.glob("apk_workspace/**/layout/control_container.xml", recursive=True)
+          for cc in cc_files:
+              with open(cc, "r", encoding="utf-8") as f:
+                  content = f.read()
+              if "floating_tabs_bar_container" not in content and "id/toolbar_container" in content:
+                  target = "id/toolbar_container\""
+                  idx = content.find(target)
+                  tag_end = content.find(">", idx) + 1
+                  content = content[:tag_end] + "\n" + dock_view + content[tag_end:]
+                  with open(cc, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print(f"Dock bar embedded into {cc}")
           '
 
-          # 4. Patch AndroidManifest.xml properly with correct namespace binding
+          # 2. Add floating translucency directly to existing Theme.Chromium.TabbedMode in styles.xml
+          python3 -c '
+          import os, glob
+
+          styles_files = glob.glob("apk_workspace/**/values/styles.xml", recursive=True)
+          translucent_items = """
+          <item name="android:windowBackground">@android:color/transparent</item>
+          <item name="android:windowIsTranslucent">true</item>
+          <item name="android:windowNoTitle">true</item>
+          <item name="android:backgroundDimEnabled">false</item>
+          <item name="android:colorBackgroundCacheHint">@null</item>
+          <item name="windowNoTitle">true</item>
+          <item name="windowActionBar">false</item>
+          """
+
+          for path in styles_files:
+              with open(path, "r", encoding="utf-8") as f:
+                  content = f.read()
+              if "Theme.Chromium.TabbedMode" in content and "android:windowIsTranslucent" not in content:
+                  idx = content.find("Theme.Chromium.TabbedMode")
+                  tag_end = content.find(">", idx) + 1
+                  content = content[:tag_end] + "\n" + translucent_items + content[tag_end:]
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print(f"Configured Theme.Chromium.TabbedMode as Floating in {path}")
+          '
+
+          # 3. Patch AndroidManifest.xml: add SYSTEM_ALERT_WINDOW and enable resizeableActivity
           python3 -c '
           import os, glob
           import xml.etree.ElementTree as ET
 
           manifest_files = glob.glob("apk_workspace/**/AndroidManifest.xml", recursive=True)
-          if not manifest_files:
-              manifest_files = ["apk_workspace/root/AndroidManifest.xml"]
-
           ANDROID_NS = "http://schemas.android.com/apk/res/android"
           ET.register_namespace("android", ANDROID_NS)
 
           for manifest_path in manifest_files:
-              if not os.path.exists(manifest_path):
-                  continue
-
               tree = ET.parse(manifest_path)
               root = tree.getroot()
 
-              # Add uses-permission for SYSTEM_ALERT_WINDOW if missing
-              has_permission = False
-              for perm in root.findall("uses-permission"):
-                  if perm.attrib.get(f"{{{ANDROID_NS}}}name") == "android.permission.SYSTEM_ALERT_WINDOW":
-                      has_permission = True
-                      break
-
-              if not has_permission:
+              # Check and add SYSTEM_ALERT_WINDOW permission
+              has_perm = any(p.attrib.get(f"{{{ANDROID_NS}}}name") == "android.permission.SYSTEM_ALERT_WINDOW" for p in root.findall("uses-permission"))
+              if not has_perm:
                   new_perm = ET.Element("uses-permission")
                   new_perm.set(f"{{{ANDROID_NS}}}name", "android.permission.SYSTEM_ALERT_WINDOW")
                   root.insert(0, new_perm)
                   print("Added android.permission.SYSTEM_ALERT_WINDOW")
 
-              # Update ChromeTabbedActivity theme to Theme.Chromium.Floating
+              # Enable resizeableActivity on ChromeTabbedActivity
               app = root.find("application")
               if app is not None:
-                  for activity in app.findall("activity"):
-                      act_name = activity.attrib.get(f"{{{ANDROID_NS}}}name", "")
+                  for act in app.findall("activity"):
+                      act_name = act.attrib.get(f"{{{ANDROID_NS}}}name", "")
                       if "ChromeTabbedActivity" in act_name:
-                          activity.set(f"{{{ANDROID_NS}}}theme", "@style/Theme.Chromium.Floating")
-                          activity.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
-                          print(f"Updated {act_name} to Theme.Chromium.Floating")
+                          act.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
+                          print(f"Enabled resizeableActivity on {act_name}")
 
               tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
-              print(f"Manifest saved: {manifest_path}")
+              print(f"Manifest updated: {manifest_path}")
           '
 
       - name: Rebuild Modified APK via APKEditor
