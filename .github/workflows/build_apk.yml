@@ -70,12 +70,11 @@ jobs:
           # Verify integrity
           unzip -t base_apk/kiwi_base.apk | head -n 5
 
-      - name: Decompile APK via APKEditor (Using -t arsc and -dex)
+      - name: Decompile APK via APKEditor (Using -t json for Obfuscated Resources)
         run: |
-          # -t arsc preserves binary resources.arsc intact, completely bypassing drawables.xml encoding issues
-          # -dex keeps raw classes.dex to prevent memory crashes
-          apkeditor d -t arsc -dex -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted with binary ARSC preserved."
+          # Use -t json to handle obfuscated resources and -dex to keep raw bytecode
+          apkeditor d -t json -dex -i base_apk/kiwi_base.apk -o apk_workspace
+          echo "APK extracted cleanly in JSON resource mode."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
@@ -191,6 +190,7 @@ jobs:
                       android:layout_width="0dp"
                       android:layout_height="28dp"
                       android:layout_weight="1"
+                      android:layout_marginEnd="3dp"
                       android:gravity="center"
                       android:text="6"
                       android:textSize="13sp"
@@ -245,7 +245,7 @@ jobs:
                   print(f"Dock bar embedded into {cc}")
           '
 
-          # 2. Patch AndroidManifest.xml: set FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
+          # 2. Patch AndroidManifest.xml: apply pre-existing FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
           python3 -c '
           import os, glob
           import xml.etree.ElementTree as ET
@@ -271,7 +271,7 @@ jobs:
                       act_name = act.attrib.get(f"{{{ANDROID_NS}}}name", "")
                       if "ChromeTabbedActivity" in act_name:
                           act.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
-                          # Point ChromeTabbedActivity to the pre-existing FakeTranslucent theme
+                          # Use the built-in translucent theme present in Kiwi resources
                           act.set(f"{{{ANDROID_NS}}}theme", "@style/Theme.Chromium.Activity.FakeTranslucent")
                           print(f"Configured {act_name} with FakeTranslucent theme & resizeableActivity")
 
