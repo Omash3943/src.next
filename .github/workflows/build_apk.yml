@@ -39,14 +39,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Download latest APKEditor by REAndroid
-          curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.1/APKEditor-1.4.1.jar" -o /usr/local/bin/APKEditor.jar
+          # Download APKEditor V1.4.9 (contains ARSCLib 1.3.9 fixing drawable alias bugs)
+          curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar" -o /usr/local/bin/APKEditor.jar
           
           cat << 'EOF' > /usr/local/bin/apkeditor
           #!/bin/bash
           java -Xmx4096m -jar /usr/local/bin/APKEditor.jar "$@"
           EOF
           chmod +x /usr/local/bin/apkeditor
+          apkeditor -version || true
 
       - name: Download Official Kiwi Base APK
         env:
@@ -72,9 +73,15 @@ jobs:
 
       - name: Decompile APK via APKEditor (Skipping Smali with -dex)
         run: |
-          # Use -dex to skip Smali extraction, preventing memory exhaustion on GitHub runner
+          # Use -dex to skip Smali extraction, preventing runner memory exhaustion
           apkeditor d -dex -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted cleanly without memory crash."
+          echo "APK extracted cleanly."
+
+      - name: Sanitize Decompiled XML Aliases
+        run: |
+          # Fix any malformed self-closing tags like <drawable name="..."/>@drawable
+          find apk_workspace -name "*.xml" -exec sed -i 's|<\([a-zA-Z_-]*\) name="\([^"]*\)"/>@|<\1 name="\2">@|g' {} +
+          echo "XML tags sanitized."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
