@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Download latest APKEditor
+          # Download latest APKEditor by REAndroid
           curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.1/APKEditor-1.4.1.jar" -o /usr/local/bin/APKEditor.jar
           
           cat << 'EOF' > /usr/local/bin/apkeditor
@@ -49,33 +49,76 @@ jobs:
           chmod +x /usr/local/bin/apkeditor
 
       - name: Download Official Kiwi Base APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p base_apk
-          echo "Fetching official Kiwi Browser arm64 release binary..."
+          echo "Downloading authentic Kiwi Browser arm64 release binary..."
 
-          # Fetch download URL dynamically from Kiwi release API
-          DOWNLOAD_URL=$(curl -sL https://api.github.com/repos/kiwibrowser/src.next/releases | \
-            jq -r '.[].assets[] | select(.name | contains("arm64") and contains("github.apk")) | .browser_download_url' | head -n 1)
+          gh release download --repo kiwibrowser/src.next --pattern "*arm64*github.apk" --dir base_apk || \
+          gh release download --repo kiwibrowser/src.next --pattern "*arm64*.apk" --dir base_apk
 
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-            DOWNLOAD_URL="https://github.com/kiwibrowser/src.next/releases/download/14310011181/com.kiwibrowser.browser-arm64-14310011181-github.apk"
+          FOUND_APK=$(find base_apk -name "*.apk" | head -n 1)
+          if [ -z "$FOUND_APK" ] || [ ! -s "$FOUND_APK" ]; then
+            echo "ERROR: Failed to download official APK binary from Kiwi releases."
+            exit 1
           fi
 
-          echo "Downloading from: $DOWNLOAD_URL"
-          curl -fL "$DOWNLOAD_URL" -o base_apk/kiwi_base.apk
+          mv "$FOUND_APK" base_apk/kiwi_base.apk
           ls -lh base_apk/kiwi_base.apk
 
-          # Verify archive integrity
+          # Verify integrity
           unzip -t base_apk/kiwi_base.apk | head -n 5
 
-      - name: Decompile APK via APKEditor
+      - name: Decompile APK via APKEditor (Skipping Smali with -dex)
         run: |
-          apkeditor d -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted cleanly."
+          # Use -dex to skip Smali extraction, preventing memory exhaustion on GitHub runner
+          apkeditor d -dex -i base_apk/kiwi_base.apk -o apk_workspace
+          echo "APK extracted cleanly without memory crash."
 
       - name: Apply Floating Window & Multi-Tab Overlay Modifications
         run: |
-          # 1. Embed Floating Tabs Dock Bar directly into control_container.xml
+          # 1. Register new IDs in public.xml so APKEditor can encode them
+          python3 -c '
+          import os, glob, re
+
+          public_files = glob.glob("apk_workspace/**/values/public.xml", recursive=True)
+          needed_ids = [
+              "floating_tabs_bar_container",
+              "floating_drag_handle",
+              "floating_tab_pills_container",
+              "floating_tab_1",
+              "floating_tab_2",
+              "floating_tab_3",
+              "floating_tab_4",
+              "floating_tab_5",
+              "floating_tab_6",
+              "floating_action_buttons_container",
+              "floating_min_btn",
+              "floating_close_btn"
+          ]
+
+          for pub in public_files:
+              with open(pub, "r", encoding="utf-8") as f:
+                  text = f.read()
+
+              id_matches = [int(x, 16) for x in re.findall(r"id=\"(0x7f09[0-9a-fA-F]+)\"", text)]
+              next_id = max(id_matches) + 1 if id_matches else 0x7f09ffff
+
+              entries = ""
+              for name in needed_ids:
+                  if f"name=\"{name}\"" not in text:
+                      entries += f"    <public type=\"id\" name=\"{name}\" id=\"{hex(next_id)}\" />\n"
+                      next_id += 1
+
+              if entries:
+                  text = text.replace("</resources>", entries + "</resources>")
+                  with open(pub, "w", encoding="utf-8") as f:
+                      f.write(text)
+                  print(f"Registered floating dock IDs in {pub}")
+          '
+
+          # 2. Embed Floating Tabs Dock Bar directly into control_container.xml
           python3 -c '
           import os, glob
 
@@ -241,34 +284,7 @@ jobs:
                   print(f"Dock bar embedded into {cc}")
           '
 
-          # 2. Add floating translucency directly to existing Theme.Chromium.TabbedMode in styles.xml
-          python3 -c '
-          import os, glob
-
-          styles_files = glob.glob("apk_workspace/**/values/styles.xml", recursive=True)
-          translucent_items = """
-          <item name="android:windowBackground">@android:color/transparent</item>
-          <item name="android:windowIsTranslucent">true</item>
-          <item name="android:windowNoTitle">true</item>
-          <item name="android:backgroundDimEnabled">false</item>
-          <item name="android:colorBackgroundCacheHint">@null</item>
-          <item name="windowNoTitle">true</item>
-          <item name="windowActionBar">false</item>
-          """
-
-          for path in styles_files:
-              with open(path, "r", encoding="utf-8") as f:
-                  content = f.read()
-              if "Theme.Chromium.TabbedMode" in content and "android:windowIsTranslucent" not in content:
-                  idx = content.find("Theme.Chromium.TabbedMode")
-                  tag_end = content.find(">", idx) + 1
-                  content = content[:tag_end] + "\n" + translucent_items + content[tag_end:]
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.write(content)
-                  print(f"Configured Theme.Chromium.TabbedMode as Floating in {path}")
-          '
-
-          # 3. Patch AndroidManifest.xml: add SYSTEM_ALERT_WINDOW and enable resizeableActivity
+          # 3. Patch AndroidManifest.xml: set FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
           python3 -c '
           import os, glob
           import xml.etree.ElementTree as ET
@@ -294,7 +310,9 @@ jobs:
                       act_name = act.attrib.get(f"{{{ANDROID_NS}}}name", "")
                       if "ChromeTabbedActivity" in act_name:
                           act.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
-                          print(f"Enabled resizeableActivity on {act_name}")
+                          # Use the built-in translucent theme present in Kiwi resources
+                          act.set(f"{{{ANDROID_NS}}}theme", "@style/Theme.Chromium.Activity.FakeTranslucent")
+                          print(f"Configured {act_name} with FakeTranslucent theme & resizeableActivity")
 
               tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
               print(f"Manifest updated: {manifest_path}")
