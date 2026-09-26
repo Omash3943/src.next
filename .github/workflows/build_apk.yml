@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Download APKEditor V1.4.9
+          # Download latest APKEditor
           curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar" -o /usr/local/bin/APKEditor.jar
           
           cat << 'EOF' > /usr/local/bin/apkeditor
@@ -70,15 +70,61 @@ jobs:
           # Verify integrity
           unzip -t base_apk/kiwi_base.apk | head -n 5
 
-      - name: Decompile APK via APKEditor (Using -t json for Obfuscated Resources)
+      - name: Decompile APK via APKEditor
         run: |
-          # Use -t json to handle obfuscated resources and -dex to keep raw bytecode
+          # Use -t json and -dex to decode manifest and layouts without ARSC corruption
           apkeditor d -t json -dex -i base_apk/kiwi_base.apk -o apk_workspace
-          echo "APK extracted cleanly in JSON resource mode."
+          echo "APK extracted cleanly."
 
-      - name: Apply Floating Window & Multi-Tab Overlay Modifications
+      - name: Configure Floating Window and Desktop Multi-Tabs
         run: |
-          # 1. Embed Floating Tabs Dock Bar directly into control_container.xml
+          # 1. Patch AndroidManifest.xml for true floating window, size layout, and permissions
+          python3 -c '
+          import os, glob
+          import xml.etree.ElementTree as ET
+
+          manifest_files = glob.glob("apk_workspace/**/AndroidManifest.xml", recursive=True)
+          ANDROID_NS = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", ANDROID_NS)
+
+          for manifest_path in manifest_files:
+              tree = ET.parse(manifest_path)
+              root = tree.getroot()
+
+              # Add SYSTEM_ALERT_WINDOW permission
+              has_perm = any(p.attrib.get(f"{{{ANDROID_NS}}}name") == "android.permission.SYSTEM_ALERT_WINDOW" for p in root.findall("uses-permission"))
+              if not has_perm:
+                  new_perm = ET.Element("uses-permission")
+                  new_perm.set(f"{{{ANDROID_NS}}}name", "android.permission.SYSTEM_ALERT_WINDOW")
+                  root.insert(0, new_perm)
+                  print("Added SYSTEM_ALERT_WINDOW")
+
+              app = root.find("application")
+              if app is not None:
+                  for act in app.findall("activity"):
+                      act_name = act.attrib.get(f"{{{ANDROID_NS}}}name", "")
+                      if "ChromeTabbedActivity" in act_name:
+                          # Use Fullscreen.Transparent which has android:windowIsFloating=true in Kiwi
+                          act.set(f"{{{ANDROID_NS}}}theme", "@style/Theme.Chromium.Activity.Fullscreen.Transparent")
+                          act.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
+                          act.set(f"{{{ANDROID_NS}}}supportsPictureInPicture", "true")
+
+                          # Inject default floating window dimensions (380dp x 550dp)
+                          if act.find("layout") is None:
+                              layout_tag = ET.Element("layout")
+                              layout_tag.set(f"{{{ANDROID_NS}}}defaultWidth", "380dp")
+                              layout_tag.set(f"{{{ANDROID_NS}}}defaultHeight", "550dp")
+                              layout_tag.set(f"{{{ANDROID_NS}}}gravity", "top|end")
+                              layout_tag.set(f"{{{ANDROID_NS}}}minWidth", "280dp")
+                              layout_tag.set(f"{{{ANDROID_NS}}}minHeight", "350dp")
+                              act.append(layout_tag)
+                          print(f"Configured {act_name} as Floating Window")
+
+              tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
+              print(f"Manifest saved: {manifest_path}")
+          '
+
+          # 2. Embed Floating Tabs Dock Bar into control_container.xml
           python3 -c '
           import os, glob
 
@@ -88,6 +134,7 @@ jobs:
               android:id="@+id/floating_tabs_bar_container"
               android:layout_width="match_parent"
               android:layout_height="38dp"
+              android:layout_gravity="top"
               android:orientation="horizontal"
               android:gravity="center_vertical"
               android:background="#E6202124"
@@ -233,50 +280,35 @@ jobs:
 
           cc_files = glob.glob("apk_workspace/**/layout/control_container.xml", recursive=True)
           for cc in cc_files:
-              with open(cc, "r", encoding="utf-8") as f:
-                  content = f.read()
-              if "floating_tabs_bar_container" not in content and "id/toolbar_container" in content:
-                  target = "id/toolbar_container\""
-                  idx = content.find(target)
-                  tag_end = content.find(">", idx) + 1
-                  content = content[:tag_end] + "\n" + dock_view + content[tag_end:]
-                  with open(cc, "w", encoding="utf-8") as f:
-                      f.write(content)
-                  print(f"Dock bar embedded into {cc}")
+              try:
+                  with open(cc, "r", encoding="utf-8") as f:
+                      content = f.read()
+                  if "floating_tabs_bar_container" not in content:
+                      insert_pos = content.find(">") + 1
+                      content = content[:insert_pos] + "\n" + dock_view + content[insert_pos:]
+                      with open(cc, "w", encoding="utf-8") as f:
+                          f.write(content)
+                      print(f"Embedded dock bar directly into {cc}")
+              except Exception as e:
+                  print(f"Skipping {cc}: {e}")
           '
 
-          # 2. Patch AndroidManifest.xml: set FakeTranslucent theme, SYSTEM_ALERT_WINDOW, and resizeableActivity
+          # 3. Force Kiwi default tab switcher preference to desktop tab strip
           python3 -c '
           import os, glob
-          import xml.etree.ElementTree as ET
 
-          manifest_files = glob.glob("apk_workspace/**/AndroidManifest.xml", recursive=True)
-          ANDROID_NS = "http://schemas.android.com/apk/res/android"
-          ET.register_namespace("android", ANDROID_NS)
-
-          for manifest_path in manifest_files:
-              tree = ET.parse(manifest_path)
-              root = tree.getroot()
-
-              has_perm = any(p.attrib.get(f"{{{ANDROID_NS}}}name") == "android.permission.SYSTEM_ALERT_WINDOW" for p in root.findall("uses-permission"))
-              if not has_perm:
-                  new_perm = ET.Element("uses-permission")
-                  new_perm.set(f"{{{ANDROID_NS}}}name", "android.permission.SYSTEM_ALERT_WINDOW")
-                  root.insert(0, new_perm)
-                  print("Added android.permission.SYSTEM_ALERT_WINDOW")
-
-              app = root.find("application")
-              if app is not None:
-                  for act in app.findall("activity"):
-                      act_name = act.attrib.get(f"{{{ANDROID_NS}}}name", "")
-                      if "ChromeTabbedActivity" in act_name:
-                          act.set(f"{{{ANDROID_NS}}}resizeableActivity", "true")
-                          # Use the built-in translucent theme present in Kiwi resources
-                          act.set(f"{{{ANDROID_NS}}}theme", "@style/Theme.Chromium.Activity.FakeTranslucent")
-                          print(f"Configured {act_name} with FakeTranslucent theme & resizeableActivity")
-
-              tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
-              print(f"Manifest updated: {manifest_path}")
+          json_files = glob.glob("apk_workspace/**/*.json", recursive=True)
+          for jf in json_files:
+              try:
+                  with open(jf, "r", encoding="utf-8") as f:
+                      content = f.read()
+                  if "active_tabswitcher" in content:
+                      content = content.replace("\"default\"", "\"desktop\"")
+                      with open(jf, "w", encoding="utf-8") as f:
+                          f.write(content)
+                      print(f"Configured default active_tabswitcher=desktop in {jf}")
+              except Exception:
+                  pass
           '
 
       - name: Rebuild Modified APK via APKEditor
