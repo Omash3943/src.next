@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner curl jq unzip python3
 
-          # Download latest APKEditor
+          # Download latest APKEditor by REAndroid
           curl -sL "https://github.com/REAndroid/APKEditor/releases/download/V1.4.1/APKEditor-1.4.1.jar" -o /usr/local/bin/APKEditor.jar
           
           cat << 'EOF' > /usr/local/bin/apkeditor
@@ -48,12 +48,29 @@ jobs:
           EOF
           chmod +x /usr/local/bin/apkeditor
 
-      - name: Download Base Kiwi APK
+      - name: Download Official Kiwi Base APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p base_apk
-          echo "Fetching official Kiwi Browser arm64 release APK..."
-          curl -sL "https://github.com/kiwibrowser/src.next/releases/download/105.0.5195.24/com.kiwibrowser.browser-arm64.apk" -o base_apk/kiwi_base.apk
+          echo "Downloading authentic Kiwi Browser arm64 release binary..."
+
+          # Download directly using GitHub CLI with runner authentication
+          gh release download --repo kiwibrowser/src.next --pattern "*arm64*github.apk" --dir base_apk || \
+          gh release download --repo kiwibrowser/src.next --pattern "*arm64*.apk" --dir base_apk
+
+          # Identify downloaded file and rename to standard base
+          FOUND_APK=$(find base_apk -name "*.apk" | head -n 1)
+          if [ -z "$FOUND_APK" ] || [ ! -s "$FOUND_APK" ]; then
+            echo "ERROR: Failed to download official APK binary from Kiwi releases."
+            exit 1
+          fi
+
+          mv "$FOUND_APK" base_apk/kiwi_base.apk
           ls -lh base_apk/kiwi_base.apk
+
+          # Verify integrity: Ensure file is a valid ZIP/APK archive
+          unzip -t base_apk/kiwi_base.apk | head -n 5
 
       - name: Decompile APK via APKEditor
         run: |
